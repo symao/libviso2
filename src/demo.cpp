@@ -32,105 +32,85 @@ Street, Fifth Floor, Boston, MA 02110-1301, USA
 #include <stdint.h>
 
 #include <viso_stereo.h>
-#include <png++/png.hpp>
+#include <opencv2/opencv.hpp>
+
+#include "vs_tictoc.h"
+#include "vs_viz3d.h"
 
 using namespace std;
 
 int main (int argc, char** argv) {
 
-  // we need the path name to 2010_03_09_drive_0019 as input argument
-  if (argc<2) {
-    cerr << "Usage: ./viso2 path/to/sequence/2010_03_09_drive_0019" << endl;
-    return 1;
-  }
-
-  // sequence directory
-  string dir = argv[1];
-  
-  // set most important visual odometry parameters
-  // for a full parameter list, look at: viso_stereo.h
-  VisualOdometryStereo::parameters param;
-  
-  // calibration parameters for sequence 2010_03_09_drive_0019 
-  param.calib.f  = 645.24; // focal length in pixels
-  param.calib.cu = 635.96; // principal point (u-coordinate) in pixels
-  param.calib.cv = 194.13; // principal point (v-coordinate) in pixels
-  param.base     = 0.5707; // baseline in meters
-  
-  // init visual odometry
-  VisualOdometryStereo viso(param);
-  
-  // current pose (this matrix transforms a point from the current
-  // frame's camera coordinates to the first frame's camera coordinates)
-  Matrix pose = Matrix::eye(4);
-    
-  // loop through all frames i=0:372
-  for (int32_t i=0; i<373; i++) {
-
-    // input file names
-    char base_name[256]; sprintf(base_name,"%06d.png",i);
-    string left_img_file_name  = dir + "/I1_" + base_name;
-    string right_img_file_name = dir + "/I2_" + base_name;
-    
-    // catch image read/write errors here
-    try {
-
-      // load left and right input image
-      png::image< png::gray_pixel > left_img(left_img_file_name);
-      png::image< png::gray_pixel > right_img(right_img_file_name);
-
-      // image dimensions
-      int32_t width  = left_img.get_width();
-      int32_t height = left_img.get_height();
-
-      // convert input images to uint8_t buffer
-      uint8_t* left_img_data  = (uint8_t*)malloc(width*height*sizeof(uint8_t));
-      uint8_t* right_img_data = (uint8_t*)malloc(width*height*sizeof(uint8_t));
-      int32_t k=0;
-      for (int32_t v=0; v<height; v++) {
-        for (int32_t u=0; u<width; u++) {
-          left_img_data[k]  = left_img.get_pixel(u,v);
-          right_img_data[k] = right_img.get_pixel(u,v);
-          k++;
-        }
-      }
-
-      // status
-      cout << "Processing: Frame: " << i;
-      
-      // compute visual odometry
-      int32_t dims[] = {width,height,width};
-      if (viso.process(left_img_data,right_img_data,dims)) {
-      
-        // on success, update current pose
-        pose = pose * Matrix::inv(viso.getMotion());
-      
-        // output some statistics
-        double num_matches = viso.getNumberOfMatches();
-        double num_inliers = viso.getNumberOfInliers();
-        cout << ", Matches: " << num_matches;
-        cout << ", Inliers: " << 100.0*num_inliers/num_matches << " %" << ", Current pose: " << endl;
-        cout << pose << endl << endl;
-
-      } else {
-        cout << " ... failed!" << endl;
-      }
-
-      // release uint8_t buffers
-      free(left_img_data);
-      free(right_img_data);
-
-    // catch image read errors here
-    } catch (...) {
-      cerr << "ERROR: Couldn't read input files!" << endl;
-      return 1;
+    std::string sourceUri = "/home/symao/data/mynteye/20171107vins_outside/1/img.avi";
+    cv::VideoCapture cap(sourceUri);
+    if(!cap.isOpened())
+    {
+        printf("[ERROR] read source video failed. file '%s' not exists.\n", sourceUri.c_str());
+        return 0;
     }
-  }
   
-  // output
-  cout << "Demo complete! Exiting ..." << endl;
+    // set most important visual odometry parameters
+    // for a full parameter list, look at: viso_stereo.h
+    VisualOdometryStereo::parameters param;
 
-  // exit
-  return 0;
+    // calibration parameters for sequence 2010_03_09_drive_0019 
+    param.calib.f  = 431.3179390163068; // focal length in pixels
+    param.calib.cu = 404.4642372131348; // principal point (u-coordinate) in pixels
+    param.calib.cv = 264.6879405975342; // principal point (v-coordinate) in pixels
+    param.base     = 51.51650439372788/param.calib.f; // baseline in meters
+  
+    // init visual odometry
+    VisualOdometryStereo viso(param);
+
+    // current pose (this matrix transforms a point from the current
+    // frame's camera coordinates to the first frame's camera coordinates)
+    Matrix pose = Matrix::eye(4);
+
+    Viz3dThread viz;
+    std::vector<cv::Affine3f> traj;
+    
+    cv::Mat image;
+    int cnt = 0;
+    while(cap.read(image)) {
+        if(image.channels()==3)
+            cv::cvtColor(image,image,cv::COLOR_BGR2GRAY);
+        int r = image.rows/2;
+        cv::Mat imgl = image.rowRange(0,r);
+        cv::Mat imgr = image.rowRange(r,r*2);
+        int width = imgl.cols;
+        int height = imgl.rows;
+
+        tic("process");
+        // compute visual odometry
+        int32_t dims[] = {width,height,width};
+        if (viso.process(imgl.data,imgr.data,dims)) {
+            printf("cost: %.1f ms\n", toc("process"));
+            // on success, update current pose
+            pose = pose * Matrix::inv(viso.getMotion());
+            // output some statistics
+            double num_matches = viso.getNumberOfMatches();
+            double num_inliers = viso.getNumberOfInliers();
+            cout << ", Matches: " << num_matches;
+            cout << ", Inliers: " << 100.0*num_inliers/num_matches << " %" << ", Current pose: " << endl;
+            cout << pose << endl << endl;
+
+            cv::Mat mat = (cv::Mat_<float>(4,4)<<pose.val[0][0],pose.val[0][1],pose.val[0][2],pose.val[0][3],
+                                                pose.val[1][0],pose.val[1][1],pose.val[1][2],pose.val[1][3],
+                                                pose.val[2][0],pose.val[2][1],pose.val[2][2],pose.val[2][3],
+                                                pose.val[3][0],pose.val[3][1],pose.val[3][2],pose.val[3][3]);
+            traj.push_back(cv::Affine3f(mat));
+            viz.updateWidget("traj", cv::viz::WTrajectory(traj, 2, 1, cv::viz::Color::green()));
+
+        } else {
+            cout << " ... failed!" << endl;
+        }
+        cnt++;
+    }
+
+    // output
+    cout << "Demo complete! Exiting ..." << endl;
+    getchar();
+    // exit
+    return 0;
 }
 
