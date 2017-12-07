@@ -48,6 +48,7 @@ int main (int argc, char** argv) {
         printf("[ERROR] read source video failed. file '%s' not exists.\n", sourceUri.c_str());
         return 0;
     }
+    int n_img = cap.get(CV_CAP_PROP_FRAME_COUNT);
   
     // set most important visual odometry parameters
     // for a full parameter list, look at: viso_stereo.h
@@ -58,7 +59,13 @@ int main (int argc, char** argv) {
     param.calib.cu = 404.4642372131348; // principal point (u-coordinate) in pixels
     param.calib.cv = 264.6879405975342; // principal point (v-coordinate) in pixels
     param.base     = 51.51650439372788/param.calib.f; // baseline in meters
-  
+    param.bucket.bucket_width = 75;
+    param.bucket.bucket_height = 48;
+    param.bucket.max_features = 2;
+    param.ransac_iters     = 200;
+    param.inlier_threshold = 1.5;
+    param.reweighting      = true;
+
     // init visual odometry
     VisualOdometryStereo viso(param);
 
@@ -71,7 +78,10 @@ int main (int argc, char** argv) {
     
     cv::Mat image;
     int cnt = 0;
-    while(cap.read(image)) {
+    for(int i=0; i<n_img; i++){
+        cap.read(image);
+        if(i%2!=0) continue;  //skip half frames to reduce accumulate error
+
         if(image.channels()==3)
             cv::cvtColor(image,image,cv::COLOR_BGR2GRAY);
         int r = image.rows/2;
@@ -84,29 +94,32 @@ int main (int argc, char** argv) {
         // compute visual odometry
         int32_t dims[] = {width,height,width};
         if (viso.process(imgl.data,imgr.data,dims)) {
-            printf("cost: %.1f ms\n", toc("process"));
             // on success, update current pose
             pose = pose * Matrix::inv(viso.getMotion());
+        #if 1
             // output some statistics
+            printf("#%d cost: %.1f ms\n", i, toc("process"));
             double num_matches = viso.getNumberOfMatches();
             double num_inliers = viso.getNumberOfInliers();
             cout << ", Matches: " << num_matches;
             cout << ", Inliers: " << 100.0*num_inliers/num_matches << " %" << ", Current pose: " << endl;
             cout << pose << endl << endl;
-
+        #endif
+        #if 1
             cv::Mat mat = (cv::Mat_<float>(4,4)<<pose.val[0][0],pose.val[0][1],pose.val[0][2],pose.val[0][3],
                                                 pose.val[1][0],pose.val[1][1],pose.val[1][2],pose.val[1][3],
                                                 pose.val[2][0],pose.val[2][1],pose.val[2][2],pose.val[2][3],
                                                 pose.val[3][0],pose.val[3][1],pose.val[3][2],pose.val[3][3]);
             traj.push_back(cv::Affine3f(mat));
             viz.updateWidget("traj", cv::viz::WTrajectory(traj, 2, 1, cv::viz::Color::green()));
-
+        #endif
         } else {
             cout << " ... failed!" << endl;
         }
         cnt++;
     }
 
+    viz.updateWidget("traj", cv::viz::WTrajectory(traj, 2, 1, cv::viz::Color::green()));
     // output
     cout << "Demo complete! Exiting ..." << endl;
     getchar();
